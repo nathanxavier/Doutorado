@@ -18,45 +18,50 @@ Referência:
 """
 # -----------------------------------------------------------------------------
 # Bibliotecas
-import pandas as pd
+# import pandas as pd
 import numpy as np  # used for general matrix computation
+import pandas as pd
+import scipy.io as sio
+import pymap3d as pm
 import matplotlib.pyplot as plt  # used for plotting
-from dronekit import connect # Pixhawk
-import comuPixhawk # Coleta de dados da Pixhawk
+from mpl_toolkits.mplot3d import Axes3D
 import relacaoAngQuat as AngQuat # Relação entre Ângulos e Quatérnios
 import func_EKF_Abord01_v1_0 as EKF # Funções do EKF - Abordagem 01
 import time
 import random
+import csv
 
 # -----------------------------------------------------------------------------
 ''' Inicialização de Variáveis '''
 # Variáveis de Tempo
-tempo = 0
+tempo=0
 tempoAnt = 0    # 
-Stop = np.inf  # Interações para Finalização
+count = 0       # Contagem de Interações
+Stop = -np.inf  # Interações para Finalização
 
-tAmostragem = 5e-2  # Tempo mínimo para amostragem
-tCorrecao = 20      # Tempo de Correção
-count = tCorrecao       # Contagem de Interações
-countStop = 0
+tAmostragem = 100   # Tempo mínimo para amostragem
+tCorrecao = 100      # Tempo de Correção (baseado no tAmostragem)
+count = 0#tCorrecao-1
 
 nCalibração = 100   # Amostras para Calibração
 
 # Variáveis de Estado:
-pos = np.array([[-45.8844543],[-23.2025882],[763.1]])    # Posições X, Y e Z da IMU
-vel = np.array([[0],[0],[0]])      # Velocidades X, Y e Z da IMU
-ang = np.array([[0],[0],[0]])     # Ângulos Yaw, Pitch, Roll
-q = np.array([[1],[0],[0],[0]])    # Quartérnios W, X, Y e Z
-bias_Gyr = np.array([[ 0.00064],[-0.00036],[0.00011]])  # Bias associado ao Giroscópio
-bias_Acc = np.array([[-0.109270],[-0.110838],[-9.928184]]) # Bias associado ao Aceletrômetro
+pos = np.array([[0],[0],[0]])       # Posições X, Y e Z da IMU
+vel = np.array([[0],[0],[0]])       # Velocidades X, Y e Z da IMU
+ang = np.array([[0],[0],[0]])       # Ângulos Yaw, Pitch, Roll
+q = AngQuat.Euler2Quaternion(ang)   # Quartérnios W, X, Y e Z
+bias_Gyr = np.array([[0.002438596491228], [-0.00090350877193], [0.001271929824561]])  # Bias associado ao Giroscópio
+bias_Acc = np.array([[0.031291228070176], [-0.143131578947368], [-9.98327719298247]]) # Bias associado ao Aceletrômetro
 bias_Acc[2] += 9.8 # Correção da Gravidade
-ruido_Pos = np.array([0,0,0])
+bias_Mag = np.array([[-0.154228070175439], [-0.275666666666667], [-0.349736842105263]]) # Bias associado ao Aceletrômetro
+ruido_Pos = np.array([1.76011196086875E-09, 2.04085660618074E-10, 53.909273567769])
 ruido_Vel = np.array([0,0,0])
-ruido_Ang = np.array([5.43209046e-08, 3.76306402e-08, 3.04091209e-08])
-ruido_Gyr = np.array([4.504e-07, 2.704e-07, 9.790e-08])   # Ruídos do Giroscópio
-ruido_Acc = np.array([1.81275500e-04, 7.62461560e-05, 1.54970144e-04])   # Ruídos do Acelerômetro
-ruido_BiasGyr = np.array([1e-4,1e-4,1e-4]) # Ruídos do Bias do Giroscópio
-ruido_BiasAcc = np.array([1e-2,1e-2,1e-2]) # Ruídos do Bias do Acelerômetro
+ruido_Ang = np.array([1.33892251758415E-05, 8.29680704727458E-08, 5.95242047805602E-08])
+ruido_Gyr = np.array([6.90886508306164E-07, 4.06536252134762E-07, 5.48015059773327E-05])   # Ruídos do Giroscópio
+ruido_Acc = np.array([0.00077661036485, 0.001583586427573, 0.000550623369042])   # Ruídos do Acelerômetro
+ruido_Mag = np.array([7.64663872069556E-06, 2.31268436578172E-06, 3.89473684210522E-06])   # Ruídos do Acelerômetro
+ruido_BiasGyr = 0*np.array([0.001113486842105, -0.000429824561404, -0.000969846491228]) # Ruídos do Bias do Giroscópio
+ruido_BiasAcc = 0*np.array([0.273529605263158, 0.192131578947368, 0.021373026315795]) # Ruídos do Bias do Acelerômetro
 
 # Variáveis de Sensores
 acc = np.array([[0],[0],[0]])   # Medições do Acelerômetro
@@ -87,7 +92,6 @@ Qd = np.eye(15)
 
 # Matriz de Covariância do Erro de Observação
 R = np.diag(np.hstack([ruido_Pos, ruido_Vel, ruido_Ang])) #[varPos, varAng]
-# R = np.diag(np.hstack([ruido_Pos, ruido_Ang])) #[varPos, varAng]
 
 ''' Matrizes do Filtro de Kalman - Abordagem 01 '''
 # Matriz de Transição
@@ -117,7 +121,7 @@ G = np.vstack([np.hstack([Zero,  Eye, Zero, Zero]),
 
 # Matriz de Observação
 H = np.vstack([np.hstack([ Eye, Zero, Zero, Zero, Zero]),
-               np.hstack([Zero, Eye, Zero, Zero, Zero]),
+               np.hstack([Zero,  Eye, Zero, Zero, Zero]),
                np.hstack([Zero, Zero,  Eye, Zero, Zero])])
 
 ''' Logs das Variáveis '''
@@ -155,28 +159,39 @@ histP = []
 
 # -----------------------------------------------------------------------------
 ''' Inicialização Leitura Arquivo .csv '''
-data = pd.read_csv('Rotação 01.csv',sep = ",");
+data = pd.read_csv('22_4_14_Caminhada.csv',sep = ",");
 
-''' Pose Inicial '''
-x[0:3] = np.array([[0],[0],[0]])
-angPix = np.array([data['Ang_Yaw'][0],data['Ang_Yaw'][1],data['Ang_Yaw'][2]])
-x[6:10] = AngQuat.Euler2Quaternion(angPix[0], angPix[1], angPix[2])
+''' Arquivo CSV '''
+header = ['Tempo',
+          'Pos_Lat', 'Pos_Lon', 'Pos_Alt',
+          'Pos_Lon_Est', 'Pos_Lat_Est', 'Pos_Alt_Est',
+          'Ang_Yaw', 'Ang_Pitch', 'Ang_Roll',
+          'Ang_Yaw_Est', 'Ang_Pitch_Est', 'Ang_Roll_Est']
+csv_file = open('22_4_14_Caminhada_Estimado.csv', mode='w')
+writer = csv.writer(csv_file, delimiter=',')
+writer.writerow(header)
+csv_file.close()
 
+pos0 = data['Pos_Lat'][0], data['Pos_Lon'][0], data['Pos_Alt'][0]
 for index, row in data.iterrows():
-    tempo = row['Tempo']
+    ''' Sinais de Entrada '''
+    tempo = np.array(row['Tempo'])/5
+    posPix = np.array(pm.geodetic2ned(row['Pos_Lat'], row['Pos_Lon'], row['Pos_Alt'], pos0[0], pos0[1], pos0[2])).reshape(3,1)
+    angPix = np.array([[row['Ang_Yaw']], [row['Ang_Pitch']], [row['Ang_Roll']]])
+    
     acc = 9.8*1e-3*np.array([[row['Xacc']], [row['Yacc']], [row['Zacc']]])
     gyro = 1e-3*np.array([[row['Xgyro']], [row['Ygyro']], [row['Zgyro']]])
-
-    posPix = np.array([[row['Pos_Lon']], [row['Pos_Lat']], [row['Pos_Alt']]])
-    angPix = np.array([[row['Ang_Yaw']], [row['Ang_Pitch']], [row['Ang_Roll']]])
     
     if tempoAnt == 0:
         tempo0 = tempo
         tempoAnt = tempo
-        posAnt = np.array([posPix[0], posPix[1], posPix[2]])
+        posAnt = np.array(posPix)
         
-    dt = 1e-6*(tempo -tempoAnt) +tAmostragem
+        ''' Pose Inicial '''
+        x[0:3] = np.array(posPix)
+        x[6:10] = AngQuat.Euler2Quaternion(angPix)
     
+    dt = 1e-6*(tempo -tempoAnt)
     """
     Propagação do EKF
     """
@@ -187,17 +202,15 @@ for index, row in data.iterrows():
         count=0
         
         # Variáveis de Entrada
-        # pos_s = np.array([[posPix.lon], [posPix.lat], [posPix.alt]])
-        pos_s = np.array([posPix[0], posPix[1], posPix[2]])
-        vel_s = (pos_s -posAnt)/dt
-        ori_s = np.array([angPix[0], angPix[1], angPix[2]])
+        pos_s = np.array(posPix)
+        vel_s = np.array((pos_s -posAnt))/dt
+        ori_s = np.array(angPix)
         
         zSens = np.vstack([pos_s, vel_s, ori_s])
-        # zSens = np.vstack([pos_s, ori_s])
         
         x, P = EKF.CorrecaoEKF(x, zSens, P, H, R)
         posAnt = np.array(pos_s)
-    
+
     ''' Logs das Variáveis '''
     # Sensores
     histAcc.append(np.ravel(acc))
@@ -205,7 +218,7 @@ for index, row in data.iterrows():
     histZ.append(np.ravel(zSens))
         
     # Posição
-    histRefPos.append(np.ravel(np.array([[posPix.lat], [posPix.lon], [posPix.alt]])))
+    histRefPos.append(np.ravel(posPix))
     histPos.append(np.ravel(x[0:3]))
     
     # Velocidade
@@ -213,11 +226,11 @@ for index, row in data.iterrows():
     
     # Ângulos
     angx = AngQuat.Quaternion2Euler(x[6:10])
-    histRefAng.append(np.rad2deg(np.ravel(np.array([vehicle.attitude.yaw, vehicle.attitude.pitch, vehicle.attitude.roll]))))
+    histRefAng.append(np.rad2deg(np.ravel(angPix)))
     histAng.append(np.rad2deg(np.ravel(angx)))
     
     # Quatérnios
-    qRef = AngQuat.Euler2Quaternion(np.array([vehicle.attitude.yaw, vehicle.attitude.pitch, vehicle.attitude.roll]))
+    qRef = AngQuat.Euler2Quaternion(np.array([angPix]))
     histRefQuat.append(np.ravel(qRef))
     histQuat.append(np.ravel(x[6:10]))
     
@@ -233,16 +246,25 @@ for index, row in data.iterrows():
     histP.append(np.array(np.sqrt(diag)))
     
     histTempo.append(1e-6*(tempo-tempo0))
-    
+        
     ''' Atualização do Tempo '''
     tempoAnt = tempo
     count = count+1
-    countStop = countStop +1
-    # time.sleep(1/tAmostragem)
-    if(countStop >= Stop):
-        break
     
-vehicle.close()
+    ''' Arquivo CSV '''
+    # header = ['Tempo',
+    #           'Pos_Lat', 'Pos_Lon', 'Pos_Alt',
+    #           'Pos_Lon_Est', 'Pos_Lat_Est', 'Pos_Alt_Est',
+    #           'Ang_Yaw', 'Ang_Pitch', 'Ang_Roll',
+    #           'Ang_Yaw_Est', 'Ang_Pitch_Est', 'Ang_Roll_Est']
+    csv_file = open('22_4_14_Caminhada_Estimado.csv', mode='a')
+    writer = csv.writer(csv_file)
+    writer.writerow([tempo,
+                     posPix[0].item(), posPix[1].item(), posPix[2].item(),
+                     x[0].item(), x[1].item(), x[2].item(),
+                     angPix[0].item(), angPix[1].item(), angPix[2].item(),
+                     angx[0], angx[1], angx[2]])
+    csv_file.close()
 
 ''' Tempo '''
 fig = plt.figure(figsize=(15,10))
@@ -259,27 +281,27 @@ ax31 = fig.add_subplot(3,2,5, ylabel="Eixo Z")
 ax31.plot(histTempo, np.array(histAcc)[:,2], 'g')
 
 ax12 = fig.add_subplot(3,2,2, title="Giroscópio")
-ax12.plot(histTempo, np.array(histGyro)[:,0])
+ax12.plot(histTempo, np.array(histGyro)[:,0], 'g')
 ax22 = fig.add_subplot(3,2,4)
-ax22.plot(histTempo, np.array(histGyro)[:,1])
+ax22.plot(histTempo, np.array(histGyro)[:,1], 'g')
 ax32 = fig.add_subplot(3,2,6)
-ax32.plot(histTempo, np.array(histGyro)[:,2])
+ax32.plot(histTempo, np.array(histGyro)[:,2], 'g')
 
 
 ''' Ângulos '''
 fig = plt.figure(figsize=(15,10))
-ax11 = fig.add_subplot(3,2,1, title="Ângulos", ylabel="Roll")
+ax11 = fig.add_subplot(3,2,1, title="Ângulos", ylabel="Yaw")
 ax11.plot(histTempo, np.array(histRefAng)[:,0], 'r', histTempo, np.array(histAng)[:,0], 'g')
-# ax11.plot(histTempo, np.array(histAng)[:,0] +3*np.array(histP)[:,0], '--m')
-# ax11.plot(histTempo, np.array(histAng)[:,0] -3*np.array(histP)[:,0], '--m')
+# ax21.plot(histTempo, np.array(histAng)[:,0] +3*np.array(histP)[:,0], '--m')
+# ax21.plot(histTempo, np.array(histAng)[:,0] -3*np.array(histP)[:,0], '--m')
 ax21 = fig.add_subplot(3,2,3, ylabel="Pitch")
 ax21.plot(histTempo, np.array(histRefAng)[:,1], 'r', histTempo, np.array(histAng)[:,1], 'g')
-# ax21.plot(histTempo, np.array(histAng)[:,1] +3*np.array(histP)[:,1], '--m')
-# ax21.plot(histTempo, np.array(histAng)[:,1] -3*np.array(histP)[:,1], '--m')
-ax31 = fig.add_subplot(3,2,5, ylabel="Yaw")
+# ax21.plot(histTempo, np.array(histAng)[:,1] +3*np.array(histP)[:,7], '--m')
+# ax21.plot(histTempo, np.array(histAng)[:,1] -3*np.array(histP)[:,7], '--m')
+ax31 = fig.add_subplot(3,2,5, ylabel="Roll")
 ax31.plot(histTempo, np.array(histRefAng)[:,2], 'r', histTempo, np.array(histAng)[:,2], 'g')
-# ax31.plot(histTempo, np.array(histAng)[:,2] +3*np.array(histP)[:,2], '--m')
-# ax31.plot(histTempo, np.array(histAng)[:,2] -3*np.array(histP)[:,2], '--m')
+# ax31.plot(histTempo, np.array(histAng)[:,2] +3*np.array(histP)[:,8], '--m')
+# ax31.plot(histTempo, np.array(histAng)[:,2] -3*np.array(histP)[:,8], '--m')
 
 erroAngX = np.array(histAng) -np.array(histRefAng)
 for index, val in np.ndenumerate(erroAngX):
@@ -288,10 +310,16 @@ for index, val in np.ndenumerate(erroAngX):
 
 ax12 = fig.add_subplot(3,2,2, title="Erro do Ângulos")
 ax12.plot(histTempo, erroAngX[:,0], 'g')
+# ax12.plot(histTempo, +3*np.array(histP)[:,6], '--m')
+# ax12.plot(histTempo, -3*np.array(histP)[:,6], '--m')
 ax22 = fig.add_subplot(3,2,4)
 ax22.plot(histTempo, erroAngX[:,1], 'g')
+# ax22.plot(histTempo, +3*np.array(histP)[:,7], '--m')
+# ax22.plot(histTempo, -3*np.array(histP)[:,7], '--m')
 ax32 = fig.add_subplot(3,2,6)
 ax32.plot(histTempo, erroAngX[:,2], 'g')
+# ax32.plot(histTempo, +3*np.array(histP)[:,8], '--m')
+# ax32.plot(histTempo, -3*np.array(histP)[:,8], '--m')
 
 
 ''' Quatérnios '''
@@ -310,71 +338,98 @@ ax41.plot(histTempo, np.array(histRefQuat)[:,3], 'r', histTempo, np.array(histQu
 fig = plt.figure(figsize=(15,10))
 ax11 = fig.add_subplot(3,2,1, title="Posição", ylabel="Eixo X")
 ax11.plot(histTempo, np.array(histRefPos)[:,0], 'r', histTempo, np.array(histPos)[:,0], 'g')
-# ax11.plot(histTempo, np.array(histPos)[:,0] +3*np.array(histP)[:,3], '--m')
-# ax11.plot(histTempo, np.array(histPos)[:,0] -3*np.array(histP)[:,3], '--m')
+ax11.plot(histTempo, np.array(histPos)[:,0] +3*np.array(histP)[:,0], '--m')
+ax11.plot(histTempo, np.array(histPos)[:,0] -3*np.array(histP)[:,0], '--m')
 ax21 = fig.add_subplot(3,2,3, ylabel="Eixo Y")
 ax21.plot(histTempo, np.array(histRefPos)[:,1], 'r', histTempo, np.array(histPos)[:,1], 'g')
-# ax21.plot(histTempo, np.array(histPos)[:,1] +3*np.array(histP)[:,4], '--m')
-# ax21.plot(histTempo, np.array(histPos)[:,1] -3*np.array(histP)[:,4], '--m')
+ax21.plot(histTempo, np.array(histPos)[:,1] +3*np.array(histP)[:,1], '--m')
+ax21.plot(histTempo, np.array(histPos)[:,1] -3*np.array(histP)[:,1], '--m')
 ax31 = fig.add_subplot(3,2,5, ylabel="Eixo Z")
 ax31.plot(histTempo, np.array(histRefPos)[:,2], 'r', histTempo, np.array(histPos)[:,2], 'g')
-# ax31.plot(histTempo, np.array(histPos)[:,2] +3*np.array(histP)[:,5], '--m')
-# ax31.plot(histTempo, np.array(histPos)[:,2] -3*np.array(histP)[:,5], '--m')
+ax31.plot(histTempo, np.array(histPos)[:,2] +3*np.array(histP)[:,2], '--m')
+ax31.plot(histTempo, np.array(histPos)[:,2] -3*np.array(histP)[:,2], '--m')
 
 ax12 = fig.add_subplot(3,2,2, title="Velocidade")
 ax12.plot(histTempo, np.array(histVel)[:,0], 'g')
-# ax12.plot(histTempo, np.array(histVel)[:,0] +3*np.array(histP)[:,6], '--m')
-# ax12.plot(histTempo, np.array(histVel)[:,0] -3*np.array(histP)[:,6], '--m')
+ax12.plot(histTempo, np.array(histVel)[:,0] +3*np.array(histP)[:,3], '--m')
+ax12.plot(histTempo, np.array(histVel)[:,0] -3*np.array(histP)[:,3], '--m')
 ax22 = fig.add_subplot(3,2,4)
 ax22.plot(histTempo, np.array(histVel)[:,1], 'g')
-# ax22.plot(histTempo, np.array(histVel)[:,1] +3*np.array(histP)[:,7], '--m')
-# ax22.plot(histTempo, np.array(histVel)[:,1] -3*np.array(histP)[:,7], '--m')
+ax22.plot(histTempo, np.array(histVel)[:,1] +3*np.array(histP)[:,4], '--m')
+ax22.plot(histTempo, np.array(histVel)[:,1] -3*np.array(histP)[:,4], '--m')
 ax32 = fig.add_subplot(3,2,6)
 ax32.plot(histTempo, np.array(histVel)[:,2], 'g')
+ax32.plot(histTempo, np.array(histVel)[:,2] +3*np.array(histP)[:,5], '--m')
+ax32.plot(histTempo, np.array(histVel)[:,2] -3*np.array(histP)[:,5], '--m')
+
+''' Plot 3D '''
+fig = plt.figure()
+ax = fig.add_subplot(1,2,1, title="3D", projection='3d')
+ax.plot(np.array(histRefPos)[:, 0], np.array(histRefPos)[:, 1], np.array(histRefPos)[:, 2], 'r')
+ax.set_xlabel('x')
+ax.set_ylabel('y')
+ax.set_zlabel('z')
+
+ax = fig.add_subplot(1,2,2, title="3D", projection='3d')
+ax.plot(np.array(histPos)[:, 0], np.array(histPos)[:, 1], np.array(histPos)[:, 2], 'g')
+ax.set_xlabel('x')
+ax.set_ylabel('y')
+ax.set_zlabel('z')
+
+''' Plot Planos '''
+fig = plt.figure()
+ax12 = fig.add_subplot(3,2,1, title="Referência", ylabel="Plano XY")
+ax12.plot(np.array(histRefPos)[:, 0], np.array(histRefPos)[:, 1], 'r')
+# ax12.plot(histTempo, np.array(histVel)[:,0] +3*np.array(histP)[:,6], '--m')
+# ax12.plot(histTempo, np.array(histVel)[:,0] -3*np.array(histP)[:,6], '--m')
+ax22 = fig.add_subplot(3,2,3, ylabel="Plano XZ")
+ax22.plot(np.array(histRefPos)[:, 0], np.array(histRefPos)[:, 2], 'r')
+# ax22.plot(histTempo, np.array(histVel)[:,1] +3*np.array(histP)[:,7], '--m')
+# ax22.plot(histTempo, np.array(histVel)[:,1] -3*np.array(histP)[:,7], '--m')
+ax32 = fig.add_subplot(3,2,5, ylabel="Plano YZ")
+ax32.plot(np.array(histRefPos)[:, 1], np.array(histRefPos)[:, 2], 'r')
 # ax32.plot(histTempo, np.array(histVel)[:,2] +3*np.array(histP)[:,8], '--m')
 # ax32.plot(histTempo, np.array(histVel)[:,2] -3*np.array(histP)[:,8], '--m')
+
+
+ax42 = fig.add_subplot(3,2,2, title="Estimado", ylabel="Plano XY")
+ax42.plot(np.array(histPos)[:, 0], np.array(histPos)[:, 1], 'g')
+# ax42.plot(histTempo, np.array(histVel)[:,0] +3*np.array(histP)[:,0], '--m')
+# ax42.plot(histTempo, np.array(histVel)[:,0] -3*np.array(histP)[:,0], '--m')
+ax52 = fig.add_subplot(3,2,4, ylabel="Plano XZ")
+ax52.plot(np.array(histPos)[:, 0], np.array(histPos)[:, 2], 'g')
+# ax52.plot(histTempo, np.array(histVel)[:,1] +3*np.array(histP)[:,1], '--m')
+# ax52.plot(histTempo, np.array(histVel)[:,1] -3*np.array(histP)[:,1], '--m')
+ax62 = fig.add_subplot(3,2,6, ylabel="Plano YZ")
+ax62.plot(np.array(histPos)[:, 1], np.array(histPos)[:, 2], 'g')
+# ax62.plot(histTempo, np.array(histVel)[:,2] +3*np.array(histP)[:,2], '--m')
+# ax62.plot(histTempo, np.array(histVel)[:,2] -3*np.array(histP)[:,2], '--m')
 
 
 ''' Biases '''
 fig = plt.figure(figsize=(15,10))
 ax11 = fig.add_subplot(3,2,1, title="Bias Giroscópio", ylabel="Eixo X")
 ax11.plot(histTempo, np.array(histBias)[:,0], 'g')
-# ax11.plot(histTempo, np.array(histBias)[:,0] +3*np.array(histP)[:,9], '--m')
-# ax11.plot(histTempo, np.array(histBias)[:,0] -3*np.array(histP)[:,9], '--m')
+ax11.plot(histTempo, np.array(histBias)[:,0] +3*np.array(histP)[:,9], '--m')
+ax11.plot(histTempo, np.array(histBias)[:,0] -3*np.array(histP)[:,9], '--m')
 ax21 = fig.add_subplot(3,2,3, ylabel="Eixo Y")
 ax21.plot(histTempo, np.array(histBias)[:,1], 'g')
-# ax21.plot(histTempo, np.array(histBias)[:,1] +3*np.array(histP)[:,10], '--m')
-# ax21.plot(histTempo, np.array(histBias)[:,1] -3*np.array(histP)[:,10], '--m')
+ax21.plot(histTempo, np.array(histBias)[:,1] +3*np.array(histP)[:,10], '--m')
+ax21.plot(histTempo, np.array(histBias)[:,1] -3*np.array(histP)[:,10], '--m')
 ax31 = fig.add_subplot(3,2,5, ylabel="Eixo Z")
 ax31.plot(histTempo, np.array(histBias)[:,2], 'g')
-# ax31.plot(histTempo, np.array(histBias)[:,2] +3*np.array(histP)[:,11], '--m')
-# ax31.plot(histTempo, np.array(histBias)[:,2] -3*np.array(histP)[:,11], '--m')
+ax31.plot(histTempo, np.array(histBias)[:,2] +3*np.array(histP)[:,11], '--m')
+ax31.plot(histTempo, np.array(histBias)[:,2] -3*np.array(histP)[:,11], '--m')
 
 ax12 = fig.add_subplot(3,2,2, title="Bias Acelerômetro")
 ax12.plot(histTempo, np.array(histBias)[:,3], 'g')
-# ax12.plot(histTempo, np.array(histBias)[:,3] +3*np.array(histP)[:,12], '--m')
-# ax12.plot(histTempo, np.array(histBias)[:,3] -3*np.array(histP)[:,12], '--m')
+ax12.plot(histTempo, np.array(histBias)[:,3] +3*np.array(histP)[:,12], '--m')
+ax12.plot(histTempo, np.array(histBias)[:,3] -3*np.array(histP)[:,12], '--m')
 ax22 = fig.add_subplot(3,2,4)
 ax22.plot(histTempo, np.array(histBias)[:,4], 'g')
-# ax22.plot(histTempo, np.array(histBias)[:,4] +3*np.array(histP)[:,13], '--m')
-# ax22.plot(histTempo, np.array(histBias)[:,4] -3*np.array(histP)[:,13], '--m')
+ax22.plot(histTempo, np.array(histBias)[:,4] +3*np.array(histP)[:,13], '--m')
+ax22.plot(histTempo, np.array(histBias)[:,4] -3*np.array(histP)[:,13], '--m')
 ax32 = fig.add_subplot(3,2,6)
 ax32.plot(histTempo, np.array(histBias)[:,5], 'g')
-# ax32.plot(histTempo, np.array(histBias)[:,5] +3*np.array(histP)[:,14], '--m')
-# ax32.plot(histTempo, np.array(histBias)[:,5] -3*np.array(histP)[:,14], '--m')
-
-
-# ''' Gravidade '''
-# fig = plt.figure(figsize=(15,10))
-# ax11 = fig.add_subplot(3,1,1, title="Bias Giroscópio", ylabel="Eixo X")
-# ax11.plot(histTempo, np.array(histGrav)[:,0], 'g')
-# # ax11.plot(histTempo, np.array(histGrav)[:,1] +3*np.array(histP)[:,15], '--m')
-# # ax11.plot(histTempo, np.array(histGrav)[:,1] -3*np.array(histP)[:,15], '--m')
-# ax11 = fig.add_subplot(3,1,2, ylabel="Eixo Y")
-# ax11.plot(histTempo, np.array(histGrav)[:,1], 'g')
-# # ax11.plot(histTempo, np.array(histGrav)[:,2] +3*np.array(histP)[:,16], '--m')
-# # ax11.plot(histTempo, np.array(histGrav)[:,2] -3*np.array(histP)[:,16], '--m')
-# ax11 = fig.add_subplot(3,1,3, ylabel="Eixo Z")
-# ax11.plot(histTempo, np.array(histGrav)[:,2], 'g')
-# # ax11.plot(histTempo, np.array(histGrav)[:,3] +3*np.array(histP)[:,17], '--m')
-# # ax11.plot(histTempo, np.array(histGrav)[:,3] -3*np.array(histP)[:,17], '--m')
+ax32.plot(histTempo, np.array(histBias)[:,5] +3*np.array(histP)[:,14], '--m')
+ax32.plot(histTempo, np.array(histBias)[:,5] -3*np.array(histP)[:,14], '--m')

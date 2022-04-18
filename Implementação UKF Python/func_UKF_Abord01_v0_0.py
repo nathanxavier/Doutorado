@@ -30,6 +30,7 @@ Referência:
 """
 # -----------------------------------------------------------------------------
 import numpy as np
+import scipy as sp
 import relacaoAngQuat as AngQuat
 
 def Skew(var):
@@ -61,7 +62,7 @@ def NominalState(v, q, bw, ba, gyro, acc, g):
     Rq = AngQuat.MatrixQuaternion(q)
     wbar =  np.vstack([0, (gyro-bw)])
 
-    dp = v
+    dp = np.array(v)
     dv = Rq*np.matrix(acc -ba) +g
     dq = .5*AngQuat.QuatMultiply(wbar, q)
     dbw = np.array([[0],[0],[0]])
@@ -90,13 +91,53 @@ ErrorState(q, nw, nbw, na, nba):
 def ErrorState(q, nw, nbw, na, nba):
     Rq = np.matrix(AngQuat.MatrixQuaternion(q))
     
-    dp = nbw
+    dp = np.array(nbw)
     dv = -Rq*na
-    dtheta = -nw
-    dbw = nbw
-    dba = nba
+    dtheta = -np.array(nw)
+    dbw = np.array(nbw)
+    dba = np.array(nba)
     
-    dq = AngQuat.SmallAngle(dtheta[0], dtheta[1], dtheta[2])
+    dq = AngQuat.SmallAngle(dtheta)
+    return np.vstack([dp, dv, dq.reshape([4,1]), dbw, dba])
+
+"""
+ErrorState(q, nw, nbw, na, nba):
+    Entradas:
+        - Vetor de Estados (x):
+            q: Quatérnio
+        - Vetor de Ruídos:
+            nw: Ruídos na Velocidade Angular X, Y e Z
+            na: Ruídos na Aceleração X, Y e Z
+            nbw: Ruídos do Bias do Giroscópio
+            nba: Ruídos do Bias do Acelerômetro
+    Saída:
+        - Vetor de Estimação (xtilde):
+            pp: Variação das Posições
+            pv: Variação das Velocidades
+            pq: Variação do Quatérnio
+            pbw: Variação do Bias do Giroscópio
+            pba: Variação do Bias do Acelerômetro
+"""
+def AUKF(x, P, Q, R, y):
+    n = P.shape[0]
+    nsp = 2*n
+    w = 1/nsp *np.ones([1, nsp])
+    
+    P_root = np.sqrt(n)*sp.linalg.sqrtm(P).T
+    X = np.hstack([P_root, -P_root]) + np.matlib.repmat(x, 1, nsp)
+    
+    Y =  
+    
+    # Parâmetros UKF
+    Rq = np.matrix(AngQuat.MatrixQuaternion(q))
+    
+    dp = np.array(nbw)
+    dv = -Rq*na
+    dtheta = -np.array(nw)
+    dbw = np.array(nbw)
+    dba = np.array(nba)
+    
+    dq = AngQuat.SmallAngle(dtheta)
     return np.vstack([dp, dv, dq.reshape([4,1]), dbw, dba])
 
 """
@@ -140,15 +181,15 @@ def PropagaEKF(x, gyro, acc, n, g, dt, F, G, P, Q, Qd):
     RqSacc = Rq*Sacc
     
     ''' Matriz de Transição '''
-    F[3:6, 6:9] = -RqSacc # F(2,3)
-    F[3:6, 12:15] = -Rq   # F(2,5)
-    F[6:9, 6:9] = -Sgyro  # F(3,3)
+    F[3:6, 6:9] = -np.array(RqSacc) # F(2,3)
+    F[3:6, 12:15] = -np.array(Rq)   # F(2,5)
+    F[6:9, 6:9] = -np.array(Sgyro)  # F(3,3)
     
-    G[3:6, 6:9] = -Rq     # G(2,3)
+    G[3:6, 6:9] = -np.array(Rq)     # G(2,3)
     
     ''' Propagação dos Estados '''
     fx = NominalState(x[3:6], x[6:10], x[10:13], x[13:16], gyro, acc, g)
-    gn = ErrorState(x[6:10], n[0:3], n[3:6], n[6:9], n[9:13])
+    gn = ErrorState(x[6:10], n[0:3], n[3:6], n[6:9], n[9:12])
     
     x = x +fx*dt +gn*dt
     x[6:10] = x[6:10]/np.linalg.norm(x[6:10]) # Normalização dos Quatérnios
@@ -182,19 +223,20 @@ def CorrecaoEKF(x, z, P, H, R):
     K = P*H.T *invS
     
     ''' Correção do Erro '''
-    hx_pos = x[0:6]
+    hx_pos = np.array(x[0:6])
     yaw, pitch, roll = AngQuat.Quaternion2Euler(x[6:10])
     hx_ang = np.array([yaw, pitch, roll]).reshape([3,1])
-    hx_bias = x[9:15]
+    hx_bias = np.array(x[9:15])
     
     hx = np.vstack([hx_pos, hx_ang, hx_bias])
     dx = K*(z -np.matrix(H)*hx)
         
-    qdx = AngQuat.Euler2Quaternion(dx[6].item(), dx[7].item(), dx[8].item())
+    qdx = AngQuat.Euler2Quaternion(dx[6:9])
     
-    x[0:6] += dx[0:6]
+    x[0:6] += np.array(dx[0:6])
     x[6:10] = AngQuat.QuatMultiply(qdx, x[6:10])
-    x[10:16] += dx[9:15]
+    x[10:16] += np.array(dx[9:15])
     
     P = (Eye -K*H)*P
+    
     return x, P

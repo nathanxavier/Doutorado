@@ -32,14 +32,16 @@ import random
 ''' Inicialização de Variáveis '''
 # Variáveis de Tempo
 tempo = 0
-tempoAnt = 0    # 
-Stop = -np.inf  # Interações para Finalização
+dt=0
+tempoAnt = 0        #
+Stop = 100          # Interações para Finalização
 
-tAmostragem = 5e-2   # Tempo mínimo para amostragem
-tCorrecao = 5      # Tempo de Correção
-count = tCorrecao       # Contagem de Interações
+tAmostragem = 5e-2  # Tempo mínimo para amostragem
+tCorrecao = np.inf#20      # Tempo de Correção
+count = 0#tCorrecao-1 # Contagem de Interações
+countStop = 0
 
-nCalibração = 100   # Amostras para Calibração
+nCalibração = 10   # Amostras para Calibração
 
 # Variáveis de Estado:
 pos = np.array([[-45.8844543],[-23.2025882],[763.1]])    # Posições X, Y e Z da IMU
@@ -49,7 +51,8 @@ q = np.array([[1],[0],[0],[0]])    # Quartérnios W, X, Y e Z
 bias_Gyr = np.array([[ 0.00064],[-0.00036],[0.00011]])  # Bias associado ao Giroscópio
 bias_Acc = np.array([[-0.109270],[-0.110838],[-9.928184]]) # Bias associado ao Aceletrômetro
 bias_Acc[2] += 9.8 # Correção da Gravidade
-ruido_Pos = np.array([0,0,0])
+ruido_Pos = np.array([1e-4,1e-4,1e-4])
+ruido_Vel = np.array([0,0,0])
 ruido_Ang = np.array([5.43209046e-08, 3.76306402e-08, 3.04091209e-08])
 ruido_Gyr = np.array([4.504e-07, 2.704e-07, 9.790e-08])   # Ruídos do Giroscópio
 ruido_Acc = np.array([1.81275500e-04, 7.62461560e-05, 1.54970144e-04])   # Ruídos do Acelerômetro
@@ -64,8 +67,8 @@ gps = np.array([[0],[0],[0]])   # Medições do GPS
 grav = np.array([[0],[0],[9.8]]) # Vetor de Gravidade
 
 # Vetores de Estado
-x = np.vstack([pos, vel, q, bias_Gyr, bias_Acc])           # Estados do Sistema
-xcorr = x
+x = np.vstack([pos, vel, q, bias_Gyr, bias_Acc])        # Estados do Sistema
+xcorr = np.array(x)
 
 xtilde = np.vstack([pos, vel, ang, bias_Gyr, bias_Acc]) # Erro dos Estados
 
@@ -84,7 +87,7 @@ Q = np.diag(np.hstack([ruido_Gyr, ruido_BiasGyr, ruido_Acc, ruido_BiasAcc]))
 Qd = np.eye(15)
 
 # Matriz de Covariância do Erro de Observação
-R = np.diag(np.hstack([ruido_Pos, ruido_Ang])) #[varPos, varAng]
+R = np.diag(np.hstack([ruido_Pos, ruido_Vel, ruido_Ang]))
 
 ''' Matrizes do Filtro de Kalman - Abordagem 01 '''
 # Matriz de Transição
@@ -114,6 +117,7 @@ G = np.vstack([np.hstack([Zero,  Eye, Zero, Zero]),
 
 # Matriz de Observação
 H = np.vstack([np.hstack([ Eye, Zero, Zero, Zero, Zero]),
+               np.hstack([Zero, Eye, Zero, Zero, Zero]),
                np.hstack([Zero, Zero,  Eye, Zero, Zero])])
 
 ''' Logs das Variáveis '''
@@ -143,9 +147,9 @@ connection_string = '/dev/ttyACM0' # Linux
 # Connect to the Vehicle
 print('Connecting to vehicle on: %s' % connection_string)
 vehicle = connect(connection_string, wait_ready=True, vehicle_class=comuPixhawk.MyVehicle)
-print('Conectado!')
 # Criação do Callback do IMU
 Valores = comuPixhawk.raw_imu_callback(vehicle, 'raw_imu', vehicle.raw_imu)
+print('Conectado!')
 
 ''' Pose Inicial '''
 print('Calibração...')
@@ -155,13 +159,12 @@ amostra = 0
 while(len(Calibracao)<nCalibração):
     while(amostra == Valores.time_usec):
         pass
-    calPos = np.array([vehicle.location.global_frame.lon, vehicle.location.global_frame.lat, vehicle.location.global_frame.alt])
+    calPos = np.array([vehicle.location.global_frame.lat, vehicle.location.global_frame.lon, vehicle.location.global_frame.alt])
     calAng = np.array([vehicle.attitude.yaw, vehicle.attitude.pitch, vehicle.attitude.roll])
     calGyr = 1e-3*np.array([Valores.xgyro, Valores.ygyro, Valores.zgyro])
     calAcc = 9.8*1e-3*np.array([Valores.xacc, Valores.yacc, Valores.zacc])
     Calibracao.append([calPos, calAng, calGyr, calAcc])
     amostra = Valores.time_usec
-print('Calibrado!')
 
 if(nCalibração>0):
     # Variáveis de Estado:
@@ -176,14 +179,17 @@ if(nCalibração>0):
     ruido_Acc = np.array(Calibracao)[:,3].var(0)
     
     # Vetores de Estado
-    q = AngQuat.Euler2Quaternion(ang[0].item(), ang[1].item(), ang[2].item())
+    q = AngQuat.Euler2Quaternion(ang)
     x = np.vstack([pos, vel, q, bias_Gyr, bias_Acc])           # Estados do Sistema
     xtilde = np.vstack([pos, vel, ang, bias_Gyr, bias_Acc]) # Erro dos Estados
     ruidos = np.hstack([ruido_Gyr, ruido_BiasGyr, ruido_Acc, ruido_BiasAcc]).reshape([12,1]) # Estados do Sistema
     
+    P = xtilde*xtilde.T
     Q = np.diag(np.hstack([ruido_Gyr, ruido_BiasGyr, ruido_Acc, ruido_BiasAcc]))
-    R = np.diag(np.hstack([ruido_Pos, ruido_Ang]))
+    R = np.diag(np.hstack([ruido_Pos, ruido_Vel, ruido_Ang]))
+    print('Calibrado!')
 
+print('Início dos Testes')
 while True:
     ''' Sinais de Entrada '''
     # Sistema aguarda nova medição do IMU para propagação
@@ -198,9 +204,10 @@ while True:
     if tempoAnt == 0:
         tempo0 = tempo
         tempoAnt = tempo
+        posAnt = np.array([[posPix.lat], [posPix.lon], [posPix.alt]])
         
     dt = 1e-6*(tempo -tempoAnt)
-    
+
     """
     Propagação do EKF
     """
@@ -211,17 +218,19 @@ while True:
         count=0
         
         # Variáveis de Entrada
-        pos_s = np.array([[posPix.lon], [posPix.lat], [posPix.alt]])
+        pos_s = np.array([[posPix.lat], [posPix.lon], [posPix.alt]])
+        vel_s = np.array((pos_s -posAnt))/dt
         ori_s = np.array([[angPix.yaw], [angPix.pitch], [angPix.roll]])
         
-        zSens = np.vstack([pos_s, ori_s])
+        zSens = np.vstack([pos_s, vel_s, ori_s])
         
         x, P = EKF.CorrecaoEKF(x, zSens, P, H, R)
-    
+        posAnt = np.array(pos_s)
+
     ''' Logs das Variáveis '''
     histAcc.append(np.ravel(acc))
     histGyro.append(np.ravel(gyro))
-    histRefPos.append(np.array([[posPix.lon], [posPix.lat], [posPix.alt]]))
+    histRefPos.append(np.array([[posPix.lat], [posPix.lon], [posPix.alt]]))
     
     histXprop.append(np.ravel(x))
     histXcorr.append(np.ravel(xcorr))
@@ -233,7 +242,7 @@ while True:
     angxcorr = AngQuat.Quaternion2Euler(xcorr[6:10])
     histAngXcorr.append(np.rad2deg(np.ravel(angxcorr)))
     
-    quat = AngQuat.Euler2Quaternion(angPix.yaw, angPix.pitch, angPix.roll)
+    quat = AngQuat.Euler2Quaternion(np.array([angPix.yaw, angPix.pitch, angPix.roll]))
     histQuatPix.append(np.ravel(quat))
     histAngPix.append(np.rad2deg(np.array([angPix.yaw, angPix.pitch, angPix.roll])))
     
@@ -247,9 +256,9 @@ while True:
     ''' Atualização do Tempo '''
     tempoAnt = tempo
     count = count+1
-    Stop = Stop +1
+    countStop = countStop +1
     # time.sleep(1/tAmostragem)
-    if(Stop >= tAmostragem):
+    if(countStop >= Stop):
         break
 
 vehicle.close()
@@ -278,15 +287,15 @@ ax32.plot(histTempo, np.array(histGyro)[:,2])
 
 ''' Posição e Velocidade '''
 fig = plt.figure(figsize=(15,10))
-ax11 = fig.add_subplot(3,2,1, title="Posição", ylabel="Eixo X")
+ax11 = fig.add_subplot(3,2,1, title="Posição", ylabel="Latitude")
 ax11.plot(histTempo, np.array(histRefPos)[:,0], 'r', histTempo, np.array(histXprop)[:,0], 'g')
 # ax11.plot(histTempo, np.array(histXprop)[:,0] +3*np.array(histP)[:,0], '--m')
 # ax11.plot(histTempo, np.array(histXprop)[:,0] -3*np.array(histP)[:,0], '--m')
-ax21 = fig.add_subplot(3,2,3, ylabel="Eixo Y")
+ax21 = fig.add_subplot(3,2,3, ylabel="Longitude")
 ax21.plot(histTempo, np.array(histRefPos)[:,1], 'r', histTempo, np.array(histXprop)[:,1], 'g')
 # ax21.plot(histTempo, np.array(histXprop)[:,1] +3*np.array(histP)[:,1], '--m')
 # ax21.plot(histTempo, np.array(histXprop)[:,1] -3*np.array(histP)[:,1], '--m')
-ax31 = fig.add_subplot(3,2,5, ylabel="Eixo Z")
+ax31 = fig.add_subplot(3,2,5, ylabel="Altitude")
 ax31.plot(histTempo, np.array(histRefPos)[:,2], 'r', histTempo, np.array(histXprop)[:,2], 'g')
 # ax31.plot(histTempo, np.array(histXprop)[:,2] +3*np.array(histP)[:,2], '--m')
 # ax31.plot(histTempo, np.array(histXprop)[:,2] -3*np.array(histP)[:,2], '--m')

@@ -23,8 +23,6 @@ import numpy as np  # used for general matrix computation
 import scipy.io as sio
 import matplotlib.pyplot as plt  # used for plotting
 from mpl_toolkits.mplot3d import Axes3D
-from dronekit import connect # Pixhawk
-import comuPixhawk # Coleta de dados da Pixhawk
 import relacaoAngQuat as AngQuat # Relação entre Ângulos e Quatérnios
 import func_EKF_Abord01_v1_0 as EKF # Funções do EKF - Abordagem 01
 import time
@@ -332,13 +330,12 @@ ax32.plot(histTempo, np.array(histVel)[:,2], 'g')
 # ax32.plot(histTempo, np.array(histVel)[:,2] +3*np.array(histP)[:,8], '--m')
 # ax32.plot(histTempo, np.array(histVel)[:,2] -3*np.array(histP)[:,8], '--m')
 
-fig = plt.figure(figsize=(15,10))
-ax11 = fig.add_subplot(2,2,1, title="3D")
-graph3D_ned = Axes3D(ax11, auto_add_to_figure=False)
-graph3D_ned.set_xlabel('North (m)')
-graph3D_ned.set_ylabel('East (m)')
-graph3D_ned.set_zlabel('Down (m)')
-ax11.plot(np.array(histPos)[:, 0], np.array(histPos)[:, 1], np.array(histPos)[:, 2], color='green', markersize=2)
+fig = plt.figure()
+ax = plt.axes(projection='3d')
+ax.plot(np.array(histPos)[:, 0], np.array(histPos)[:, 1], np.array(histPos)[:, 2], color='green', markersize=2)
+ax.set_xlabel('x')
+ax.set_ylabel('y')
+ax.set_zlabel('z')
 
 ax12 = fig.add_subplot(3,2,2, title="Velocidade", ylabel="Plano XY")
 ax12.plot(np.array(histPos)[:, 0], np.array(histPos)[:, 1], 'g')
